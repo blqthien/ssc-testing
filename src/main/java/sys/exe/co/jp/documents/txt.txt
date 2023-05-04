@@ -1,0 +1,626 @@
+package sysexe.com.vn.redmine.events;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.poi.ss.formula.functions.T;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationListener;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+
+import com.taskadapter.redmineapi.ProjectManager;
+import com.taskadapter.redmineapi.RedmineException;
+import com.taskadapter.redmineapi.RedmineManager;
+import com.taskadapter.redmineapi.RedmineManagerFactory;
+import com.taskadapter.redmineapi.TimeEntryManager;
+import com.taskadapter.redmineapi.bean.Issue;
+import com.taskadapter.redmineapi.bean.IssueCategory;
+import com.taskadapter.redmineapi.bean.IssuePriority;
+import com.taskadapter.redmineapi.bean.IssueStatus;
+import com.taskadapter.redmineapi.bean.Project;
+import com.taskadapter.redmineapi.bean.TimeEntry;
+import com.taskadapter.redmineapi.bean.TimeEntryFactory;
+import com.taskadapter.redmineapi.bean.Tracker;
+import com.taskadapter.redmineapi.bean.TrackerFactory;
+import com.taskadapter.redmineapi.bean.Watcher;
+import com.taskadapter.redmineapi.bean.WatcherFactory;
+import com.taskadapter.redmineapi.internal.ResultsWrapper;
+
+import sysexe.com.vn.redmine.config.RedmineSetup;
+import sysexe.com.vn.redmine.dto.IssueModel;
+import sysexe.com.vn.redmine.dto.SetupDto;
+import sysexe.com.vn.redmine.dto.TrackerDto;
+import sysexe.com.vn.redmine.enumeration.Activites;
+import sysexe.com.vn.redmine.enumeration.ColNameIndex;
+import sysexe.com.vn.redmine.util.CsvMapper;
+import sysexe.com.vn.redmine.util.ExcelUtils;
+import sysexe.com.vn.redmine.util.LogUtils;
+
+@Component
+public class ApplicationStartup implements ApplicationListener<ApplicationReadyEvent> {
+
+	Logger logger = LoggerFactory.getLogger(ApplicationStartup.class);
+
+	private final String WBS_SETUP = "Master";
+
+	@Autowired
+	RedmineSetup redmineConfig;
+
+	@Override
+	public void onApplicationEvent(final ApplicationReadyEvent event) {
+
+		RedmineManager mgr = RedmineManagerFactory.createWithApiKey(redmineConfig.getUrl(),
+				redmineConfig.getApiAccessKey());
+
+//		createTimeEntriesFromCSV(csvFilePath);
+
+		// apache poi row index setting
+		redmineConfig.setWbsStartRow(redmineConfig.getWbsStartRow() - 1);
+		redmineConfig.setWbsEndRow(redmineConfig.getWbsEndRow() - 1);
+
+		this.getDefaultSetup();
+
+//		this.getRedmineSettingInfo(mgr);
+
+//		this.wbsToRedmine(mgr);
+
+		// this.redmineToWBS();
+
+	}
+
+	private SetupDto getDefaultSetup() {
+
+		SetupDto result = new SetupDto();
+		try {
+
+			File wbsFile = new File(redmineConfig.getWbsPath());
+			FileInputStream fis = new FileInputStream(wbsFile);
+			XSSFWorkbook workbook = new XSSFWorkbook(fis);
+			Sheet master = workbook.getSheet(WBS_SETUP);
+
+//			CellRangeAddress ref = new CellRangeAddress(0, 13, 0, 1);
+//			Row r = wbsSheet.getRow(ref.getFirstRow());
+//			if (r != null) {
+//				Cell c = r.getCell(1);
+//				System.out.println(c.getStringCellValue());
+//			}
+
+//			this.getCellRangeData(master, 2, 32, ColNameIndex.Y.getID(), ColNameIndex.Z.getID());
+
+			List<TrackerDto> lstTracker = ExcelUtils.readFromSheet(master, 2, 17, ColNameIndex.E.getID(),
+					ColNameIndex.F.getID(), TrackerDto.class, "id", "name");
+
+			fis.close();
+			workbook.close();
+
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		return result;
+	}
+
+	/**
+	 * get cell range data.
+	 *
+	 * @param startRow Index of first row
+	 * @param endRow   Index of last row (inclusive), must be equal to or larger
+	 *                 than {@code firstRow}
+	 * @param firstCol Index of first column
+	 * @param lastCol  Index of last column (inclusive), must be equal to or larger
+	 *                 than {@code firstCol}
+	 */
+	public List<T> getCellRangeData(Sheet sheet, int startRow, int endRow, int startColumn, int endColumn) {
+
+		startRow = startRow - 1; // reset apache poi row index
+		endRow = endRow - 1; // reset apache poi row index
+		if (endRow < startRow || endColumn < startColumn) {
+			LogUtils.logError("Invalid cell range, having lastRow < firstRow || lastCol < firstCol, " + "had rows "
+					+ startRow + " >= " + startRow + " or cells " + endColumn + " >= " + startColumn);
+			return null;
+		}
+
+		ExcelUtils.readFromSheet(sheet, startRow, endRow, startColumn, endColumn, RedmineSetup.class, null);
+
+//		CellRangeAddress ref = new CellRangeAddress(0, 13, 0, 1);
+
+		for (int rId = startRow; rId <= endRow; rId++) {
+			Row r = sheet.getRow(rId);
+			if (r != null) {
+				for (int cId = startColumn; cId <= endColumn; cId++) {
+					Cell c = r.getCell(cId);
+
+					System.out.printf("%s%n", ExcelUtils.getCellStringValue(c));
+
+				}
+			}
+			System.out.println();
+		}
+
+		return null;
+	}
+
+	/**
+	 * convert day to hour.
+	 *
+	 * @param in {Float}
+	 * @return hour's task estimate
+	 */
+	private Float toHour(Float in) {
+		if (null != in) {
+			return in * redmineConfig.getHoursPerDay();
+		}
+		return null;
+	}
+
+	/**
+	 * read wbs excel file each row, each row's wbs creating one issue
+	 */
+	private void wbsToRedmine(RedmineManager mgr) {
+		try {
+
+			ProjectManager projectManager = mgr.getProjectManager();
+			Project projectByKey = projectManager.getProjectByKey(redmineConfig.getProjectKey());
+			Integer projectId = projectByKey.getId();
+			String projectName = projectByKey.getName();
+
+			// createIssue_tmp(mgr);
+//			mgr.getIssueManager().deleteIssue(375);
+
+			File wbsFile = new File(redmineConfig.getWbsPath());
+			FileInputStream fis = new FileInputStream(wbsFile);
+			XSSFWorkbook workbook = new XSSFWorkbook(fis);
+			Sheet wbsSheet = workbook.getSheet(redmineConfig.getWbsDefScheduleName());
+
+			int beggin = redmineConfig.getWbsStartRow(), end = redmineConfig.getWbsEndRow();
+			Integer parentId = null;
+			Row curRow = null;
+			Integer curIssueId = null;
+			IssueModel issueData = null;
+			boolean isParent = false;
+
+			for (; beggin <= end; beggin++) {
+				curRow = wbsSheet.getRow(beggin);
+				issueData = new IssueModel();
+
+				Tracker create = new TrackerFactory().create(redmineConfig.getDefTrackerId());
+				issueData.setTracker(create);
+
+				Cell id = curRow.getCell(ColNameIndex.valueOf(redmineConfig.getIssueId()).getID());
+				Cell category = curRow.getCell(ColNameIndex.valueOf(redmineConfig.getIssueCategory()).getID());
+				Cell subject = curRow.getCell(ColNameIndex.valueOf(redmineConfig.getIssueSubject()).getID());
+				Cell startDate = curRow.getCell(ColNameIndex.valueOf(redmineConfig.getIssueStartDate()).getID());
+				Cell dueDate = curRow.getCell(ColNameIndex.valueOf(redmineConfig.getIssueDueDate()).getID());
+				Cell estHours = curRow.getCell(ColNameIndex.valueOf(redmineConfig.getIssueEstimatedTime()).getID());
+
+				issueData.setId(ExcelUtils.getCellIntValue(id));
+				issueData.setPhase(ExcelUtils.getCellStringValue(category));
+				issueData.setSubject(ExcelUtils.getCellStringValue(subject));
+				issueData.setDescription(ExcelUtils.getCellStringValue(subject)); // set the same task name
+
+				issueData.setStartDate(ExcelUtils.getCellDateValue(startDate));
+				issueData.setDueDate(ExcelUtils.getCellDateValue(dueDate));
+
+				issueData.setEstimatedHours(toHour(ExcelUtils.getCellFloatValue(estHours)));
+
+				System.out.println(issueData.toString());
+
+				if (StringUtils.isEmpty(ExcelUtils.getCellStringValue(id))) {
+					/**
+					 * define parent task : task name null => redmine task name is project name +
+					 * phase name
+					 */
+					if (StringUtils.isEmpty(issueData.getSubject())) {
+						isParent = true;
+						issueData.setSubject(issueData.getPhase());
+					}
+
+					// curIssueId = this.createIssue(mgr, projectId, parentId, issueData);
+					if (isParent) {
+						parentId = curIssueId;
+						isParent = false;
+					}
+					if (null == id) {
+						id = curRow.createCell(ColNameIndex.valueOf(redmineConfig.getIssueId()).getID());
+					}
+					// id.setCellValue(curIssueId.toString());
+				}
+			}
+
+			// open an OutputStream to save written data into Excel file
+			FileOutputStream os = new FileOutputStream(wbsFile);
+			workbook.write(os);
+			os.close();
+			System.out.println("Writing on Excel file Finished ...");
+
+			// Close workbook, OutputStream and Excel file to prevent leak
+			workbook.close();
+			fis.close();
+
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+		} catch (IOException e) {
+			e.printStackTrace();
+		} catch (RedmineException e) {
+			e.printStackTrace();
+		}
+
+	}
+
+	/**
+	 *
+	 * @param mgr           {RedmineManager}
+	 * @param projectId     {Integer}
+	 * @param issueParentId {Integer}
+	 * @param data          {IssueModel}
+	 * @return issue id
+	 * @throws RedmineException
+	 */
+	private int createIssue(RedmineManager mgr, Integer projectId, Integer issueParentId, IssueModel data)
+			throws RedmineException {
+
+		Issue issue = new Issue();
+		issue.setTracker(new TrackerFactory().create(10));
+		issue.setSubject(data.getSubject());
+		issue.setDescription(data.getDescription());
+
+//		Version ver = new Version(512);
+//		IssueCategory cat = new IssueCategory(673);
+//		issue.setTargetVersion(ver);
+//		issue.setCategory(cat);
+
+		issue.setProjectId(projectId);
+
+		// set start date, due date, estimated hours
+		issue.setStartDate(data.getStartDate());
+		issue.setDueDate(data.getDueDate());
+		issue.setEstimatedHours(data.getEstimatedHours());
+
+		if (null != issueParentId) {
+			issue.setParentId(issueParentId);
+		}
+
+		// assignee user id
+		issue.setAssigneeId(45);
+
+		// create group watcher -> this will be send email if redmine has setting
+		Collection<Watcher> watchers = new ArrayList<Watcher>();
+		Watcher watcher = WatcherFactory.create(8);
+		watchers.add(watcher);
+// comment out to test		issue.addWatchers(watchers);
+
+		// create new issues
+		// show issue id after created -> will update wbs file
+		return mgr.getIssueManager().createIssue(issue).getId();
+
+	}
+
+	private Collection<Watcher> getListWatcher() {
+
+		Collection<Watcher> list = new ArrayList<Watcher>();
+		Watcher watcher = WatcherFactory.create(8);
+		list.add(watcher);
+
+		return list;
+	}
+
+	private List<T> getListTracker() {
+		return null;
+	}
+
+	private List<T> getListStatus() {
+		return null;
+	}
+
+	/**
+	 * Get Project Setting. Confirm this information the same wbs Setup Sheet.
+	 *
+	 * @param mgr {RedmineManager}
+	 */
+	private void getRedmineSettingInfo(RedmineManager mgr) {
+
+		try {
+			ProjectManager projectManager = mgr.getProjectManager();
+			Project projectByKey = projectManager.getProjectByKey(redmineConfig.getProjectKey());
+
+			// Get List Tracker
+			System.out.println("List Tracker");
+			Collection<Tracker> lstTracker = projectByKey.getTrackers();
+			for (Tracker tmpTracker : lstTracker) {
+				System.out.println(tmpTracker.getId() + " : " + tmpTracker.getName());
+			}
+
+			// Get List User
+//			System.out.println("List User");
+//			List<User> lstUser = mgr.getUserManager().getUsers();
+//			for (User user : lstUser) {
+//				System.out.println(user.getId() + " : " + user.getLogin() + " : " + user.getMail() + " : "
+//						+ user.getFullName() + " : " + user.getStatus());
+//			}
+
+			// Get List IssueStatus
+			System.out.println("List IssueStatus");
+			List<IssueStatus> lstStatus = mgr.getIssueManager().getStatuses();
+			for (IssueStatus status : lstStatus) {
+				System.out.println(status.getId() + " : " + status.getName());
+			}
+
+			// Get List IssueCategory
+			System.out.println("List IssueCategory");
+			List<IssueCategory> lstCategory = mgr.getIssueManager().getCategories(projectByKey.getId());
+			for (IssueCategory category : lstCategory) {
+				System.out.println(category.getId() + " : " + category.getName());
+			}
+
+			// Get List IssuePriority
+			System.out.println("List IssuePriority");
+			List<IssuePriority> lstPriority = mgr.getIssueManager().getIssuePriorities();
+			for (IssuePriority priority : lstPriority) {
+				System.out.println(priority.getId() + " : " + priority.getName());
+			}
+
+		} catch (RedmineException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void createIssue_tmp(RedmineManager mgr) throws RedmineException {
+
+		// Version ver = new Version().setId(512);
+		// IssueCategory cat = new IssueCategory(mgr.getTransport()).setId(673);
+		ProjectManager projectManager = mgr.getProjectManager();
+		Project projectByKey = projectManager.getProjectByKey(redmineConfig.getProjectKey());
+		TimeEntryManager timeEntryManager = mgr.getTimeEntryManager();
+
+		Issue issue = new Issue();
+		issue.setSubject("Test-Watcher, Assignee");
+		issue.setDescription("description testttttttttttttttttttttttttt");
+
+//				issue.setTargetVersion(ver);
+//				issue.setCategory(cat);
+
+		issue.setProjectId(projectByKey.getId());
+
+		// set start date, due date, estimated hours
+		issue.setStartDate(new Date("07/15/2020"));
+		issue.setDueDate(new Date("07/16/2020"));
+		issue.setEstimatedHours(4F);
+
+		issue.setParentId(360);
+
+		// assignee user id
+
+		issue.setAssigneeId(45);
+		Collection<Watcher> watchers = new ArrayList<Watcher>();
+
+		// create group watcher -> this will be send email if redmine has setting
+		Watcher watcher = WatcherFactory.create(8);
+		watchers.add(watcher);
+		issue.addWatchers(watchers);
+
+		// create new issues
+		// int id = mgr.getIssueManager().createIssue(issue).getId();
+
+		// show issue id after created -> will update wbs file
+		// System.out.println(id);
+
+//		RedmineManager mgr = RedmineManagerFactory.createWithApiKey(uri, apiAccessKey);
+//		// override default page size if needed
+		mgr.setObjectsPerPage(100);
+		List<Issue> issues = mgr.getIssueManager().getIssues(redmineConfig.getProjectKey(), null);
+		for (Issue tmpIssue : issues) {
+			System.out.println(tmpIssue.toString() + " - EstimatedHours : " + tmpIssue.getEstimatedHours()
+					+ " - SpentHours : " + tmpIssue.getSpentHours());
+
+			List<TimeEntry> elements = timeEntryManager.getTimeEntriesForIssue(tmpIssue.getId());
+			for (TimeEntry timeEntry : elements) {
+				System.out.println(timeEntry.getIssueId() + " : " + timeEntry.getHours());
+			}
+		}
+
+//		Collection<Tracker> newTrackers = new ArrayList<Tracker>();
+//		newTrackers.add(TrackerFactory.create(10, "Feature-1"));
+//		projectByKey.addTrackers(newTrackers);
+
+		// get list tracker
+		Collection<Tracker> lstTracker = projectByKey.getTrackers();
+		for (Tracker tmpTracker : lstTracker) {
+			System.out.println(tmpTracker.getId() + " : " + tmpTracker.getName());
+		}
+
+//		TimeEntryManager timeEntryManager = mgr.getTimeEntryManager();
+		final Map<String, String> params = new HashMap<>();
+		params.put("project_id", redmineConfig.getProjectKey());
+//		params.put("activity_id", activityId);
+		List<TimeEntry> elements = timeEntryManager.getTimeEntries(params).getResults();
+		for (TimeEntry timeEntry : elements) {
+			System.out.println(timeEntry.getIssueId() + " : " + timeEntry.getHours());
+		}
+
+	}
+
+	private void createTimeEntriesFromCSV(String csvPath) {
+		try {
+			CsvMapper.getCsv(redmineConfig.getCsvFilePath()).forEach(timeSheet -> {
+
+				Integer activityId = Activites.valueOf(timeSheet.getActivity()).getID();
+				String comment = timeSheet.getComment();
+				String date = timeSheet.getDate();
+				Integer issueId = Integer.parseInt(timeSheet.getIssue().replaceAll("[^\\d.]+|\\.(?!\\d)", ""));
+
+				Float hour = Float.parseFloat(timeSheet.getHour().split(":")[0]);
+
+				Float minutes = Float.parseFloat(timeSheet.getHour().split(":")[1]) / 60;
+
+				Float duration = hour + minutes;
+
+				createOneTimeEntry("evm-project", issueId, duration, comment, activityId, date);
+
+			});
+
+		} catch (IOException e) {
+			logger.error("", e);
+		}
+	}
+
+	@SuppressWarnings("unused")
+	private void findAllMyIssues() {
+
+		RedmineManager mgr = RedmineManagerFactory.createWithApiKey(redmineConfig.getUrl(),
+				redmineConfig.getApiAccessKey());
+		mgr.setObjectsPerPage(100);
+
+		Map<String, String> parameters = new HashMap<>();
+		parameters.put("assigned_to_id", redmineConfig.getUserId());
+		parameters.put("status_id", "open");
+		parameters.put("limit", "100");
+		parameters.put("done_ratio", "<=99");
+
+		ResultsWrapper<Issue> issues;
+		try {
+
+			issues = mgr.getIssueManager().getIssues(parameters);
+			for (Issue issue : issues.getResults()) {
+
+				logger.info(issue.getCreatedOn() + " " + issue.getUpdatedOn() + " " + issue.toString() + " ratio="
+						+ issue.getDoneRatio() + " status=" + issue.getStatusName() + " status_id="
+						+ issue.getStatusId());
+
+				if (issue.getStatusId() == 8) {
+					issue.setDoneRatio(100);
+					issue.setStatusId(8);
+					mgr.getIssueManager().update(issue);
+				}
+
+			}
+
+		} catch (RedmineException e) {
+			e.printStackTrace();
+		}
+
+	}
+
+	@SuppressWarnings("unused")
+	private void createOneTimeEntry(String projectId, Integer issueId, Float hours, String comment, Integer activityId,
+			String date) {
+
+		RedmineManager mgr = RedmineManagerFactory.createWithApiKey(redmineConfig.getUrl(),
+				redmineConfig.getApiAccessKey());
+
+		TimeEntry timeEntry = TimeEntryFactory.create();
+
+		timeEntry.setProjectName(projectId);
+		timeEntry.setIssueId(issueId);
+		timeEntry.setHours(hours);
+		timeEntry.setComment(comment);
+		timeEntry.setActivityId(activityId);
+
+		DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+		LocalDate localSpentOn = LocalDate.parse(date, formatter);
+
+		Date spentOn = Date.from(localSpentOn.atStartOfDay(ZoneId.systemDefault()).toInstant());
+
+		timeEntry.setSpentOn(spentOn);
+
+		logger.info("Spent On date: ", spentOn);
+
+		try {
+			TimeEntry te = mgr.getTimeEntryManager().createTimeEntry(timeEntry);
+
+			logger.info("{}", te);
+
+		} catch (RedmineException e) {
+
+			logger.error("createOneTimeEntry: ", e);
+		}
+
+	}
+
+	@SuppressWarnings("unused")
+	private void createRangeDateTimeEntries(String dateStart, String dateEnd, String projectId, Integer issueId,
+			Float hours, String comment, Integer activityId) {
+
+		logger.info("CREATING:");
+
+		LocalDate start = LocalDate.parse(dateStart);
+		LocalDate end = LocalDate.parse(dateEnd);
+
+		while (!start.isAfter(end)) {
+
+			if (start.getDayOfWeek() != DayOfWeek.SATURDAY && start.getDayOfWeek() != DayOfWeek.SUNDAY) {
+
+				createOneTimeEntry(projectId, issueId, hours, comment, activityId, start.toString());
+
+			}
+
+			start = start.plusDays(1);
+		}
+
+	}
+
+	@SuppressWarnings("unused")
+	private void deleteTimeEntriesByDates(String dateStart, String dateEnd, Integer projectId, Integer issueId) {
+
+		logger.info("DELETING:");
+
+		RedmineManager mgr = RedmineManagerFactory.createWithApiKey(redmineConfig.getUrl(),
+				redmineConfig.getApiAccessKey());
+
+		Map<String, String> parameters = new HashMap<>();
+
+		if (projectId != null) {
+			parameters.put("project_id", projectId.toString());
+		}
+
+		if (issueId != null) {
+			parameters.put("issue_id", issueId.toString());
+		}
+
+		parameters.put("from", dateStart);
+		parameters.put("to", dateEnd);
+		parameters.put("user_id", redmineConfig.getUserId());
+
+		try {
+			ResultsWrapper<TimeEntry> rw = mgr.getTimeEntryManager().getTimeEntries(parameters);
+
+			rw.getResults().stream().forEach(t -> {
+				try {
+					mgr.getTimeEntryManager().deleteTimeEntry(t.getId());
+					logger.info("{}", t);
+
+				} catch (RedmineException e) {
+					logger.error("deleteTimeEntriesByDates: ", e);
+				}
+			});
+
+		} catch (RedmineException e) {
+			logger.error("deleteTimeEntriesByDates: ", e);
+		}
+
+	}
+
+}
